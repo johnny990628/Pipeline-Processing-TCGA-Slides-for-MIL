@@ -10,13 +10,13 @@ SIZE=256
 DIR_REPO=../CLAM
 
 # Root path to pathology images 
-DIR_READ=/NAS02/RawData/tcga_rcc
-DIR_SAVE=/NAS02/ExpData/tcga_rcc
+DIR_READ=/work/u6658716/TCGA-LUAD/DATASETS/TCGA/LUAD
+DIR_SAVE=/work/u6658716/TCGA-LUAD/CLAM/PATCHES/New_LUAD
 
 cd ${DIR_REPO}
 
 echo "run seg & patching for all slides"
-CUDA_VISIBLE_DEVICES=0 python3 create_patches_fp.py \
+python3 create_patches_fp.py \
     --source ${DIR_READ} \
     --save_dir ${DIR_SAVE}/tiles-${MAG}x-s${SIZE} \
     --patch_size ${SIZE} \
@@ -24,4 +24,4 @@ CUDA_VISIBLE_DEVICES=0 python3 create_patches_fp.py \
     --preset tcga.csv \
     --patch_magnification ${MAG} \
     --seg --patch --stitch --save_mask \
-    --auto_skip --in_child_dir
+    --auto_skip
