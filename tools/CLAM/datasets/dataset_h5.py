@@ -141,7 +141,7 @@ class Whole_Slide_Bag_FP(Dataset):
 		
 		self.file_path = file_path
 
-		with h5py.File(self.file_path, "r") as f:
+		with h5py.File(self.file_path, "r", driver='core', backing_store=False, rdcc_nbytes=1024**3) as f:
 			self.patch_level = f['coords'].attrs['patch_level']
 			self.patch_size = f['coords'].attrs['patch_size']
 			if target_patch_size > 0:

@@ -8,6 +8,8 @@ import pdb
 import time
 from datasets.dataset_h5 import Dataset_All_Bags, Whole_Slide_Bag_FP
 from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import transforms
 from models.resnet_custom import resnet50_baseline, resnet50_full, resnet50_MoCo, resnet18_ST
 import argparse
@@ -19,6 +21,12 @@ from PIL import Image
 import h5py
 import openslide
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+# 初始化分布式进程组
+dist.init_process_group(backend="nccl")
+
+# 设置当前 GPU
+device = int(os.environ["LOCAL_RANK"])  # 通过 torchrun 设置的环境变量
+torch.cuda.set_device(device)
 
 def compute_w_loader(arch, file_path, output_path, wsi, model,
     batch_size = 8, verbose = 0, print_every=20, imagenet_pretrained=True, 
@@ -48,8 +56,10 @@ def compute_w_loader(arch, file_path, output_path, wsi, model,
         sampler_setting=sampler_setting, color_normalizer=color_normalizer, 
         color_augmenter=color_augmenter, add_patch_noise=add_patch_noise, 
         vertical_flip=vertical_flip, custom_transforms=custom_transforms)
-    kwargs = {'num_workers': 4, 'pin_memory': True} if device.type == "cuda" else {}   #num_workers 4->0
-    loader = DataLoader(dataset=dataset, batch_size=batch_size, **kwargs, collate_fn=collate_features)
+    kwargs = {'num_workers': 4, 'pin_memory': True}
+    from torch.utils.data.distributed import DistributedSampler
+    sampler = DistributedSampler(dataset, shuffle=False)
+    loader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=sampler, **kwargs, collate_fn=collate_features)
 
     if verbose > 0:
         print('processing {}: total of {} batches'.format(file_path,len(loader)))
@@ -127,16 +137,17 @@ def compute_w_loader(arch, file_path, output_path, wsi, model,
 @torch.no_grad()
 def conch_encoder_image(conch_model, batch, proj_contrast='Y'):
     # Use CONCH's built-in functions
-    vis_features = conch_model.visual.forward_no_head(batch, normalize=False)
+    actual_model = conch_model.module if isinstance(conch_model, torch.nn.parallel.DistributedDataParallel) else conch_model
+    vis_features = actual_model.visual.forward_no_head(batch, normalize=False)
     
     if proj_contrast == 'N':
         image_features = vis_features
 
     elif proj_contrast == 'Y':
-        image_features = conch_model.visual.forward_project(vis_features)
+        image_features = actual_model.visual.forward_project(vis_features)
 
     elif proj_contrast in ['NY', 'YN']:
-        image_features = (vis_features, conch_model.visual.forward_project(vis_features))
+        image_features = (vis_features, actual_model.visual.forward_project(vis_features))
 
     return image_features
 
@@ -339,12 +350,12 @@ if __name__ == '__main__':
         print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
     else:
         raise NotImplementedError("Please specify a valid architecture.")
-
-    model = model.to(device)
     
+    model = model.to(device)
+    model = DDP(model, device_ids=[device], output_device=device)
     # print_network(model)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
+    # if torch.cuda.device_count() > 1:
+    #    model = nn.DataParallel(model)
         
     model.eval()
     total = len(bags_dataset)
