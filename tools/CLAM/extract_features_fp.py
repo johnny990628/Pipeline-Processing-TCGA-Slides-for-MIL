@@ -12,6 +12,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision import transforms
 from models.resnet_custom import resnet50_baseline, resnet50_full, resnet50_MoCo, resnet18_ST
+
 import argparse
 from utils.utils import print_network, collate_features
 from utils.utils import get_slide_id, get_slide_fullpath
@@ -21,12 +22,6 @@ from PIL import Image
 import h5py
 import openslide
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-# 初始化分布式进程组
-dist.init_process_group(backend="nccl")
-
-# 设置当前 GPU
-device = int(os.environ["LOCAL_RANK"])  # 通过 torchrun 设置的环境变量
-torch.cuda.set_device(device)
 
 def compute_w_loader(arch, file_path, output_path, wsi, model,
     batch_size = 8, verbose = 0, print_every=20, imagenet_pretrained=True, 
@@ -57,9 +52,12 @@ def compute_w_loader(arch, file_path, output_path, wsi, model,
         color_augmenter=color_augmenter, add_patch_noise=add_patch_noise, 
         vertical_flip=vertical_flip, custom_transforms=custom_transforms)
     kwargs = {'num_workers': 4, 'pin_memory': True}
-    from torch.utils.data.distributed import DistributedSampler
-    sampler = DistributedSampler(dataset, shuffle=False)
-    loader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=sampler, **kwargs, collate_fn=collate_features)
+    if args.multi_gpu:
+        from torch.utils.data.distributed import DistributedSampler
+        sampler = DistributedSampler(dataset, shuffle=False)
+        loader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=sampler, **kwargs, collate_fn=collate_features)
+    else:
+        loader = DataLoader(dataset=dataset, batch_size=batch_size, **kwargs, collate_fn=collate_features)
 
     if verbose > 0:
         print('processing {}: total of {} batches'.format(file_path,len(loader)))
@@ -201,7 +199,7 @@ def clip_encoder_image(clip_model, batch, proj_contrast='Y'):
     return image_features
 
 parser = argparse.ArgumentParser(description='Feature Extraction')
-parser.add_argument('--arch', type=str, default='CONCH', choices=['RN50-B', 'RN50-F', 'RN18-SimCL', 'ViT256-HIPT', 'CTransPath', 'OGCLIP', 'CLIP', 'PLIP', 'CONCH'], help='Choose which architecture to use for extracting features.')
+parser.add_argument('--arch', type=str, default='CONCH', choices=['RN50-B', 'RN50-F', 'RN18-SimCL', 'ViT256-HIPT', 'CTransPath', 'OGCLIP', 'CLIP', 'PLIP', 'CONCH', 'GIGAPATH', 'RETCCL','UNI'], help='Choose which architecture to use for extracting features.')
 parser.add_argument('--ckpt_path', type=str, default=None, help='The checkpoint path for pretrained models.')
 parser.add_argument('--data_h5_dir', type=str, default=None)
 parser.add_argument('--data_slide_dir', type=str, default=None)
@@ -219,7 +217,7 @@ parser.add_argument('--sampler_size', default=1000, type=int)
 parser.add_argument('--sampler_pool_size', default=1200, type=int)
 parser.add_argument('--sampler_seed', default=42, type=int)
 parser.add_argument('--color_norm', default=False, action='store_true')
-parser.add_argument('--cnorm_template', default='x20-256', type=str, help='use x5-256 or x20-256 or camelyon16-x20-256')
+parser.add_argument('--cnorm_template', default='512', type=str, help='use x5-256 or x20-256 or camelyon16-x20-256')
 parser.add_argument('--cnorm_method', default='macenko', type=str, help='macenko or vahadane')
 parser.add_argument('--color_aug', default=None, type=str, help='Applying color augmentation to patch images.')
 parser.add_argument('--patch_noise', default=None, type=str, help='Applying Guassian Blur to patch images.')
@@ -227,6 +225,7 @@ parser.add_argument('--vertical_flip', default=False, action='store_true', help=
 parser.add_argument('--save_h5', default=False, action='store_true')
 parser.add_argument('--proj_to_contrast', type=str, default='Y', choices=['Y', 'N', 'YN', 'NY'], help='If projecting image features into VL contrast space.')
 parser.add_argument('--clip_type', default='ViT-B/32', type=str, help='used for specifying the CLIP model.')
+parser.add_argument('--multi_gpu', default=False, action='store_true')
 args = parser.parse_args()
 
 
@@ -343,16 +342,70 @@ if __name__ == '__main__':
             checkpoint_path=args.ckpt_path,
             force_image_size=args.target_patch_size,
         )
-        color_normalizer = None
+        # color_normalizer = None
         args_imagenet_pretrained = False
         args_sampler = None
         args_custom_transforms = preprocess
-        print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
+        # print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
+    elif args.arch == 'GIGAPATH':
+        import timm
+        assert "HF_TOKEN" in os.environ, "Please set the HF_TOKEN environment variable to your Hugging Face API token"
+        model = timm.create_model("hf_hub:prov-gigapath/prov-gigapath", img_size=args.target_patch_size, pretrained=True)
+        transform = transforms.Compose(
+            [
+                transforms.Resize(args.target_patch_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ]
+        )
+        # color_normalizer = None
+        args_imagenet_pretrained = False
+        args_sampler = None
+        args_custom_transforms = transform
+        # print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
+    elif args.arch == 'RETCCL':
+        import models.ResNet as ResNet
+        model = ResNet.resnet50(num_classes=128,mlp=False, two_branch=False, normlinear=True)
+        checkpoint = torch.load(args.ckpt_path)
+        model.fc = nn.Identity() 
+        model.load_state_dict(checkpoint, strict=True)
+        
+        # color_normalizer = None  
+        args_imagenet_pretrained = False  # 表示不使用 ImageNet 预训练模型
+        args_sampler = None  # 假设不使用样本采样
+        args_custom_transforms = transforms.Compose([
+            transforms.Resize(args.target_patch_size),  # 使用 `args.target_patch_size` 设置目标图像大小
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))  # 标准化
+        ])
+        # print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
+    elif args.arch == 'UNI':
+        import timm
+        from timm.data import resolve_data_config
+        from timm.data.transforms_factory import create_transform
+        assert "HF_TOKEN" in os.environ, "Please set the HF_TOKEN environment variable to your Hugging Face API token"
+        model = timm.create_model("hf-hub:MahmoodLab/UNI", pretrained=True, init_values=1e-5, dynamic_img_size=True)
+        transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
+        # color_normalizer = None
+        args_imagenet_pretrained = False
+        args_sampler = None
+        args_custom_transforms = transform
+        # print(f"[warning] Due to the use of {args.arch}, only using custom transforms and all other arguments are not active.")
     else:
         raise NotImplementedError("Please specify a valid architecture.")
     
-    model = model.to(device)
-    model = DDP(model, device_ids=[device], output_device=device)
+    print(model)
+    
+    if args.multi_gpu:
+        # 初始化分布式进程组
+        dist.init_process_group(backend="nccl")
+        # 设置当前 GPU
+        device = int(os.environ["LOCAL_RANK"])  # 通过 torchrun 设置的环境变量
+        torch.cuda.set_device(device)
+        model = model.to(device)
+        model = DDP(model, device_ids=[device], output_device=device)
+    else:
+        model = model.to(device)
     # print_network(model)
     # if torch.cuda.device_count() > 1:
     #    model = nn.DataParallel(model)

@@ -140,15 +140,15 @@ def color_normalization(img, normalizer):
 	return rimg
 
 def get_color_normalizer(name, cn_method='macenko'):
-	assert name in ['x5-256', 'x20-256', 'thumbnail-256', 'camelyon16-x20-256']
+	assert name in ['512', 'x5-256', 'x20-256', 'thumbnail-256', 'camelyon16-x20-256']
 	assert cn_method in ['macenko', 'vahadane']
 	template_path = './docs/template-%s.jpg' % name
 	print("[INFO] Color Normalizer: template image is from %s" % template_path)
 	target = staintools.read_image(template_path)
 	target = staintools.LuminosityStandardizer.standardize(target)
 	if cn_method == 'macenko':
-		normalizer = torchstain.MacenkoNormalizer(backend='torch')
-		normalizer.fit(T(target))
+		normalizer = staintools.StainNormalizer(method='macenko')
+		normalizer.fit(target)
 	else:
 		normalizer = staintools.StainNormalizer(method='vahadane')
 		normalizer.fit(target)
