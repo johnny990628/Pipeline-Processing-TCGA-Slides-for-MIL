@@ -23,6 +23,8 @@ from PIL import Image
 import h5py
 import openslide
 from termcolor import colored
+import torchvision.transforms.functional as TF
+
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 def convert_pytorch_checkpoint(net_state_dict):
@@ -175,9 +177,13 @@ if __name__ == '__main__':
         saved_state_dict = torch.load(args.ckpt_path)["desc"]
         saved_state_dict = convert_pytorch_checkpoint(saved_state_dict)
 
+        def pad_to_270(image):
+            return TF.pad(image, padding=(23, 23, 23, 23), fill=0, padding_mode='constant')
+
         model.load_state_dict(saved_state_dict, strict=True)
         args_custom_transforms = transforms.Compose([
             transforms.Resize(args.target_patch_size),
+            transforms.Lambda(pad_to_270),
             transforms.ToTensor(),
             # transforms.Normalize(mean = (0.485, 0.456, 0.406), std = (0.229, 0.224, 0.225))
         ])

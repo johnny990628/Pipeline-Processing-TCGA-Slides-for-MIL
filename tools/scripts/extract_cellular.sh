@@ -1,4 +1,4 @@
-# sbatch dsca_extract.sh 5 224
+# sbatch dsca_extract.sh 5 224 224
 # Sample patches of SIZE x SIZE at MAG (as used in S03)
 MAG=$1
 SIZE=$2
