@@ -262,3 +262,53 @@ class CLAM_MB(CLAM_SB):
         if return_features:
             results_dict.update({'features': M})
         return logits, Y_prob, Y_hat, A_raw, results_dict
+
+class CLAM_Survival(nn.Module):
+    def __init__(self, gate=True, dropout=True, dims=[512,256,256], **kwargs):
+        super(CLAM_Survival, self).__init__()
+        # self.size_dict = {'xs': [embed_dim, 256, 256], "small": [embed_dim, 512, 256], "big": [embed_dim, 512, 384], 'large': [embed_dim, 1024, 512]}
+        # size = self.size_dict[size_arg]
+        fc = [nn.Linear(dims[0], dims[1]), nn.ReLU()]
+        if dropout:
+            fc.append(nn.Dropout(0.25))
+        if gate:
+            attention_net = Attn_Net_Gated(L=dims[1], D=dims[2], dropout=dropout, n_classes=1)
+        else:
+            attention_net = Attn_Net(L=dims[1], D=dims[2], dropout=dropout, n_classes=1)
+        fc.append(attention_net)
+        self.attention_net = nn.Sequential(*fc)
+        self.out_layer = nn.Sequential(
+                    nn.Linear(dims[1], dims[2]),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.25),
+                    nn.Linear(dims[2], 1)
+        )
+
+    @staticmethod
+    def create_positive_targets(length, device):
+        return torch.full((length,), 1, device=device).long()
+
+    @staticmethod
+    def create_negative_targets(length, device):
+        return torch.full((length,), 0, device=device).long()
+
+    def forward(self, h, epoch=0, label=None, instance_eval=False, return_features=False, attention_only=False):
+        h=h.squeeze(0)
+        A, h = self.attention_net(h)  # NxK
+        A = torch.transpose(A, 1, 0)  # KxN
+        A_raw = A
+        A = F.softmax(A, dim=1)  # softmax over N
+
+        M = torch.mm(A, h)  # A: 1 * N h: N * 512 => M: 1 * 512
+        # M = torch.cat([M, embed_batch], axis=1)
+        risk_score = self.out_layer(M)  
+        # Y_hat = torch.topk(risk_score, 1, dim=1)[1]
+        result = {
+            'risk_score': risk_score,
+            'attention_raw': A_raw,
+            'M': M
+        }
+        if attention_only:
+            return A_raw, risk_score
+        else:
+            return risk_score

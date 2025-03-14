@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.model_mil import MIL_fc, MIL_fc_mc
-from models.model_clam import CLAM_SB, CLAM_MB
+from models.model_clam import CLAM_SB, CLAM_MB, CLAM_Survival
 import pdb
 import os
 import pandas as pd
@@ -18,13 +18,15 @@ def initiate_model(args, ckpt_path):
     print('Init Model')    
     model_dict = {"dropout": args.drop_out, 'n_classes': args.n_classes}
     
-    if args.model_size is not None and args.model_type in ['clam_sb', 'clam_mb']:
+    if args.model_size is not None and args.model_type in ['clam', 'clam_sb', 'clam_mb']:
         model_dict.update({"size_arg": args.model_size})
     
     if args.model_type =='clam_sb':
         model = CLAM_SB(**model_dict)
     elif args.model_type =='clam_mb':
         model = CLAM_MB(**model_dict)
+    elif args.model_type == 'clam':
+        model = CLAM_Survival(dims=[512,256,256])
     else: # args.model_type == 'mil'
         if args.n_classes > 2:
             model = MIL_fc_mc(**model_dict)
@@ -32,16 +34,7 @@ def initiate_model(args, ckpt_path):
             model = MIL_fc(**model_dict)
 
     print_network(model)
-
-    ckpt = torch.load(ckpt_path)
-    ckpt_clean = {}
-    for key in ckpt.keys():
-        if 'instance_loss_fn' in key:
-            continue
-        ckpt_clean.update({key.replace('.module', ''):ckpt[key]})
-    model.load_state_dict(ckpt_clean, strict=True)
-
-    model.relocate()
+    model.load_state_dict(torch.load(ckpt_path))
     model.eval()
     return model
 

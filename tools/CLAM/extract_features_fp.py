@@ -21,6 +21,7 @@ from utils.file_utils import save_hdf5
 from PIL import Image
 import h5py
 import openslide
+from peft import PeftModel, PeftConfig
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 def compute_w_loader(arch, file_path, output_path, wsi, model,
@@ -198,6 +199,12 @@ def clip_encoder_image(clip_model, batch, proj_contrast='Y'):
 
     return image_features
 
+def load_lora_weights(base_model, lora_ckpt_path):
+    peft_config = PeftConfig.from_pretrained(lora_ckpt_path)
+    print(f"[load_lora_weights] LoRA config: {peft_config}")
+    lora_model = PeftModel.from_pretrained(base_model, lora_ckpt_path)
+    return lora_model
+
 parser = argparse.ArgumentParser(description='Feature Extraction')
 parser.add_argument('--arch', type=str, default='CONCH', choices=['RN50-B', 'RN50-F', 'RN18-SimCL', 'ViT256-HIPT', 'CTransPath', 'OGCLIP', 'CLIP', 'PLIP', 'CONCH', 'GIGAPATH', 'RETCCL','UNI'], help='Choose which architecture to use for extracting features.')
 parser.add_argument('--ckpt_path', type=str, default=None, help='The checkpoint path for pretrained models.')
@@ -226,6 +233,8 @@ parser.add_argument('--save_h5', default=False, action='store_true')
 parser.add_argument('--proj_to_contrast', type=str, default='Y', choices=['Y', 'N', 'YN', 'NY'], help='If projecting image features into VL contrast space.')
 parser.add_argument('--clip_type', default='ViT-B/32', type=str, help='used for specifying the CLIP model.')
 parser.add_argument('--multi_gpu', default=False, action='store_true')
+parser.add_argument('--lora_ckpt_path', type=str, default=None, help='Path to the LoRA checkpoint for the foundation model.')
+
 args = parser.parse_args()
 
 
@@ -342,6 +351,9 @@ if __name__ == '__main__':
             checkpoint_path=args.ckpt_path,
             force_image_size=args.target_patch_size,
         )
+        if args.lora_ckpt_path is not None:
+            print(f"Loading LoRA checkpoint from {args.lora_ckpt_path}")
+            model = load_lora_weights(model, args.lora_ckpt_path)
         # color_normalizer = None
         args_imagenet_pretrained = False
         args_sampler = None
@@ -403,12 +415,9 @@ if __name__ == '__main__':
         device = int(os.environ["LOCAL_RANK"])  # 通过 torchrun 设置的环境变量
         torch.cuda.set_device(device)
         model = model.to(device)
-        model = DDP(model, device_ids=[device], output_device=device)
+        # model = DDP(model, device_ids=[device], output_device=device)
     else:
         model = model.to(device)
-    # print_network(model)
-    # if torch.cuda.device_count() > 1:
-    #    model = nn.DataParallel(model)
         
     model.eval()
     total = len(bags_dataset)

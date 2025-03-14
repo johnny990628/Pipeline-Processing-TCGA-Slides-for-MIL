@@ -30,30 +30,12 @@ parser.add_argument('--overlap', type=float, default=None)
 parser.add_argument('--config_file', type=str, default="heatmap_config_template.yaml")
 args = parser.parse_args()
 
-def infer_single_slide(model, features, label, reverse_label_dict, k=1):
+def infer_single_slide(model, features, device):
 	features = features.to(device)
 	with torch.no_grad():
-		if isinstance(model, (CLAM_SB,)):
-			model_results_dict = model(features)
-			logits, Y_prob, Y_hat, A, _ = model(features)
-			Y_hat = Y_hat.item()
-
-			if isinstance(model, (CLAM_MB,)):
-				A = A[Y_hat]
-
+			A, risk_score = model(features, attention_only=True)
 			A = A.view(-1, 1).cpu().numpy()
-
-		else:
-			raise NotImplementedError
-
-		print('Y_hat: {}, Y: {}, Y_prob: {}'.format(reverse_label_dict[Y_hat], label, ["{:.4f}".format(p) for p in Y_prob.cpu().flatten()]))	
-		
-		probs, ids = torch.topk(Y_prob, k)
-		probs = probs[-1].cpu().numpy()
-		ids = ids[-1].cpu().numpy()
-		preds_str = np.array([reverse_label_dict[idx] for idx in ids])
-
-	return ids, preds_str, probs, A
+	return A, risk_score
 
 def load_params(df_entry, params):
 	for key in params.keys():
@@ -91,13 +73,13 @@ if __name__ == '__main__':
 		else:
 			print ('\n'+key + " : " + str(value))
 			
-	decision = input('Continue? Y/N ')
-	if decision in ['Y', 'y', 'Yes', 'yes']:
-		pass
-	elif decision in ['N', 'n', 'No', 'NO']:
-		exit()
-	else:
-		raise NotImplementedError
+	# decision = input('Continue? Y/N ')
+	# if decision in ['Y', 'y', 'Yes', 'yes']:
+	# 	pass
+	# elif decision in ['N', 'n', 'No', 'NO']:
+	# 	exit()
+	# else:
+	# 	raise NotImplementedError
 
 	args = config_dict
 	patch_args = argparse.Namespace(**args['patching_arguments'])
@@ -165,7 +147,6 @@ if __name__ == '__main__':
 	else:
 		raise NotImplementedError
 
-
 	feature_extractor = resnet50_baseline(pretrained=True)
 	feature_extractor.eval()
 	device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -181,6 +162,7 @@ if __name__ == '__main__':
 		feature_extractor = nn.DataParallel(feature_extractor, device_ids=device_ids).to('cuda:0')
 	else:
 		feature_extractor = feature_extractor.to(device)
+		model = model.to(device)
 
 	os.makedirs(exp_args.production_save_dir, exist_ok=True)
 	os.makedirs(exp_args.raw_save_dir, exist_ok=True)
@@ -278,11 +260,15 @@ if __name__ == '__main__':
 			best_level = wsi_object.wsi.get_best_level_for_downsample(32)
 			vis_params['vis_level'] = best_level
 		mask = wsi_object.visWSI(**vis_params, number_contours=True)
-		mask.save(mask_path)
+		# mask.save(mask_path)
 		
-		features_path = os.path.join(r_slide_save_dir, slide_id+'.pt')
-		h5_path = os.path.join(r_slide_save_dir, slide_id+'.h5')
-	
+		# features_path = os.path.join(r_slide_save_dir, slide_id+'.pt')
+		# h5_path = os.path.join(r_slide_save_dir, slide_id+'.h5')
+		features_path = os.path.join(data_args.patch_dir, 'feats-CONCH-s224', 'pt_files', slide_id+'.pt')
+		h5_path = os.path.join(data_args.patch_dir, 'patches', slide_id+'.h5')
+
+		print(f"features_path: {features_path}")
+		print(f"h5_path: {h5_path}")
 
 		##### check if h5_features_file exists ######
 		if not os.path.isfile(h5_path) :
@@ -305,7 +291,7 @@ if __name__ == '__main__':
 		process_stack.loc[i, 'bag_size'] = len(features)
 		
 		wsi_object.saveSegmentation(mask_file)
-		Y_hats, Y_hats_str, Y_probs, A = infer_single_slide(model, features, label, reverse_label_dict, exp_args.n_classes)
+		A, risk_score = infer_single_slide(model, features, device)
 		del features
 		
 		if not os.path.isfile(block_map_save_path): 
@@ -316,9 +302,10 @@ if __name__ == '__main__':
 			block_map_save_path = save_hdf5(block_map_save_path, asset_dict, mode='w')
 		
 		# save top 3 predictions
-		for c in range(exp_args.n_classes):
-			process_stack.loc[i, 'Pred_{}'.format(c)] = Y_hats_str[c]
-			process_stack.loc[i, 'p_{}'.format(c)] = Y_probs[c]
+		# for c in range(exp_args.n_classes):
+			# process_stack.loc[i, 'Pred_{}'.format(c)] = Y_hats_str[c]
+			# process_stack.loc[i, 'p_{}'.format(c)] = Y_probs[c]
+			# process_stack.loc[i, 'risk_score'] = risk_score
 
 		os.makedirs('heatmaps/results/', exist_ok=True)
 		if data_args.process_list is not None:
@@ -336,16 +323,17 @@ if __name__ == '__main__':
 		samples = sample_args.samples
 		for sample in samples:
 			if sample['sample']:
-				tag = "label_{}_pred_{}".format(label, Y_hats[0])
-				sample_save_dir =  os.path.join(exp_args.production_save_dir, exp_args.save_exp_code, 'sampled_patches', str(tag), sample['name'])
-				os.makedirs(sample_save_dir, exist_ok=True)
+				# tag = "label_{}_pred_{}".format(label, Y_hats[0])
+				# tag = "label_{}_risk_{:.2f}".format(label, risk_score[0])
+				# sample_save_dir =  os.path.join(exp_args.production_save_dir, exp_args.save_exp_code, 'sampled_patches', sample['name'])
+				# os.makedirs(sample_save_dir, exist_ok=True)
 				print('sampling {}'.format(sample['name']))
 				sample_results = sample_rois(scores, coords, k=sample['k'], mode=sample['mode'], seed=sample['seed'], 
 					score_start=sample.get('score_start', 0), score_end=sample.get('score_end', 1))
 				for idx, (s_coord, s_score) in enumerate(zip(sample_results['sampled_coords'], sample_results['sampled_scores'])):
 					print('coord: {} score: {:.3f}'.format(s_coord, s_score))
 					patch = wsi_object.wsi.read_region(tuple(s_coord), patch_args.patch_level, (patch_args.patch_size, patch_args.patch_size)).convert('RGB')
-					patch.save(os.path.join(sample_save_dir, '{}_{}_x_{}_y_{}_a_{:.3f}.png'.format(idx, slide_id, s_coord[0], s_coord[1], s_score)))
+					# patch.save(os.path.join(sample_save_dir, '{}_{}_x_{}_y_{}_a_{:.3f}.png'.format(idx, slide_id, s_coord[0], s_coord[1], s_score)))
 
 		wsi_kwargs = {'top_left': top_left, 'bot_right': bot_right, 'patch_size': patch_size, 'step_size': step_size, 
 		'custom_downsample':patch_args.custom_downsample, 'level': patch_args.patch_level, 'use_center_shift': heatmap_args.use_center_shift}
@@ -367,9 +355,9 @@ if __name__ == '__main__':
 		else:
 			ref_scores = None
 		
-		if heatmap_args.calc_heatmap:
-			compute_from_patches(wsi_object=wsi_object, clam_pred=Y_hats[0], model=model, feature_extractor=feature_extractor, batch_size=exp_args.batch_size, **wsi_kwargs, 
-								attn_save_path=save_path,  ref_scores=ref_scores)
+		# if heatmap_args.calc_heatmap:
+		# 	compute_from_patches(wsi_object=wsi_object, model=model, feature_extractor=feature_extractor, batch_size=exp_args.batch_size, **wsi_kwargs, 
+		# 						attn_save_path=save_path,  ref_scores=ref_scores)
 
 		if not os.path.isfile(save_path):
 			print('heatmap {} not found'.format(save_path))

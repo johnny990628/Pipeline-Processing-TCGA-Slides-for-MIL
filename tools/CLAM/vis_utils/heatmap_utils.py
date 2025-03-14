@@ -65,10 +65,10 @@ def compute_from_patches(wsi_object, clam_pred=None, model=None, feature_extract
             features = feature_extractor(roi)
 
             if attn_save_path is not None:
-                A = model(features, attention_only=True)
+                A, risk_score = model(features, attention_only=True)
            
-                if A.size(0) > 1: #CLAM multi-branch attention
-                    A = A[clam_pred]
+                # if A.size(0) > 1: #CLAM multi-branch attention
+                #     A = A[clam_pred]
 
                 A = A.view(-1, 1).cpu().numpy()
 

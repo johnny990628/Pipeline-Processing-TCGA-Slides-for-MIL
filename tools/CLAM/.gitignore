@@ -1,3 +1,6 @@
 *.pt
 **/.DS_Store
 __pycache__/
+heatmap_production_results
+heatmap_raw_results
+results
